@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ page.title or 'Page' }} — Scraper</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0f; color: #e0e0e0; line-height: 1.7; }
+.topbar { padding: 12px 32px; background: #12121a; border-bottom: 1px solid #222; display: flex; align-items: center; gap: 16px; }
+.topbar a { color: #4fc3f7; text-decoration: none; font-size: 14px; }
+.topbar a:hover { text-decoration: underline; }
+.container { max-width: 900px; margin: 0 auto; padding: 32px 24px; }
+h1 { font-size: 28px; color: #fff; margin-bottom: 8px; }
+h1 a { color: #4fc3f7; text-decoration: none; }
+h1 a:hover { text-decoration: underline; }
+.meta { color: #888; font-size: 13px; margin-bottom: 24px; display: flex; gap: 16px; flex-wrap: wrap; }
+.meta span { background: #1a1a2e; padding: 4px 10px; border-radius: 6px; }
+.content { background: #12121a; border: 1px solid #222; border-radius: 12px; padding: 32px; margin-bottom: 24px; }
+.content h1, .content h2, .content h3, .content h4, .content h5, .content h6 { color: #4fc3f7; margin: 20px 0 10px; }
+.content h1 { font-size: 24px; }
+.content h2 { font-size: 20px; }
+.content h3 { font-size: 17px; }
+.content p { margin-bottom: 12px; }
+.content a { color: #4fc3f7; }
+.content pre { background: #0a0a0f; border: 1px solid #333; border-radius: 8px; padding: 16px; overflow-x: auto; margin: 12px 0; }
+.content code { background: #1a1a2e; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
+.content pre code { background: none; padding: 0; }
+.content blockquote { border-left: 3px solid #4fc3f7; padding-left: 16px; color: #aaa; margin: 12px 0; }
+.content table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+.content th, .content td { padding: 8px 12px; border: 1px solid #333; text-align: left; }
+.content th { background: #1a1a2e; color: #4fc3f7; }
+.content img { max-width: 100%; border-radius: 8px; margin: 8px 0; }
+.content ul, .content ol { padding-left: 24px; margin: 8px 0; }
+.content li { margin: 4px 0; }
+.side-section { margin-bottom: 24px; }
+.side-section h3 { color: #aaa; font-size: 14px; text-transform: uppercase; margin-bottom: 10px; }
+.link-list { list-style: none; }
+.link-list li { padding: 8px 12px; background: #12121a; border: 1px solid #222; border-radius: 6px; margin-bottom: 4px; }
+.link-list li a { color: #4fc3f7; text-decoration: none; font-size: 13px; }
+.link-list li a:hover { text-decoration: underline; }
+.link-list .anchor { color: #666; font-size: 12px; margin-left: 8px; }
+.raw-toggle { background: none; border: 1px solid #444; color: #888; padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 12px; margin-bottom: 12px; }
+.raw-toggle:hover { border-color: #4fc3f7; color: #4fc3f7; }
+.raw-content { display: none; white-space: pre-wrap; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 13px; color: #aaa; background: #0a0a0f; padding: 16px; border-radius: 8px; max-height: 600px; overflow-y: auto; }
+.raw-content.active { display: block; }
+.rendered-content.active { display: block; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <a href="/">← Dashboard</a>
+  <a href="{{ page.url }}" target="_blank">Original ↗</a>
+</div>
+
+<div class="container">
+  <h1><a href="{{ page.url }}" target="_blank">{{ page.title or '(no title)' }}</a></h1>
+  <div class="meta">
+    <span>🌐 {{ page.domain }}</span>
+    <span>📝 {{ page.word_count }} words</span>
+    <span>🔗 {{ page.out_link_count }} out · {{ page.in_link_count }} in</span>
+    {% if page.author %}<span>✍️ {{ page.author }}</span>{% endif %}
+    {% if page.pub_date %}<span>📅 {{ page.pub_date }}</span>{% endif %}
+    <span>🕐 {{ page.scraped_at.strftime('%Y-%m-%d %H:%M') if page.scraped_at else '' }}</span>
+    <span>HTTP {{ page.status_code }}</span>
+  </div>
+
+  <button class="raw-toggle" onclick="toggleRaw()">Toggle Raw Markdown / Rendered</button>
+
+  <div class="content rendered-content active" id="renderedContent">
+    {{ md_html | safe }}
+  </div>
+  <div class="raw-content" id="rawContent">{{ page.markdown }}</div>
+
+  {% if outlinks %}
+  <div class="side-section">
+    <h3>🔗 Outbound Links ({{ outlinks|length }})</h3>
+    <ul class="link-list">
+      {% for l in outlinks %}
+      <li>
+        {% if l.target_title %}
+          <a href="/page/{{ l.target_hash }}">{{ l.target_title }}</a>
+        {% else %}
+          <a href="{{ l.target_url }}" target="_blank">{{ l.anchor_text or l.target_url[:60] }}</a>
+        {% endif %}
+        <span class="anchor">{{ l.anchor_text[:40] if l.anchor_text else '' }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {% if inlinks %}
+  <div class="side-section">
+    <h3>📎 Inbound Links ({{ inlinks|length }})</h3>
+    <ul class="link-list">
+      {% for l in inlinks %}
+      <li>
+        {% if l.source_url %}
+          <a href="/page/{{ l.source_hash }}">{{ l.source_title or l.source_url }}</a>
+        {% else %}
+          <span>{{ l.source_hash }}</span>
+        {% endif %}
+        <span class="anchor">{{ l.anchor_text[:40] if l.anchor_text else '' }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+</div>
+
+<script>
+function toggleRaw() {
+  document.getElementById('renderedContent').classList.toggle('active');
+  document.getElementById('rawContent').classList.toggle('active');
+}
+</script>
+</body>
+</html>

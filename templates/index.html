@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Web Scraper Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0f; color: #e0e0e0; }
+.header { padding: 24px 32px; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); border-bottom: 1px solid #333; }
+.header h1 { font-size: 24px; color: #fff; }
+.header p { color: #888; font-size: 14px; margin-top: 4px; }
+.stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; padding: 24px 32px; }
+.stat-card { background: #12121a; border: 1px solid #222; border-radius: 12px; padding: 20px; text-align: center; }
+.stat-card .num { font-size: 36px; font-weight: 700; color: #4fc3f7; }
+.stat-card .label { color: #888; font-size: 13px; margin-top: 4px; }
+.charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 0 32px 24px; }
+.chart-box { background: #12121a; border: 1px solid #222; border-radius: 12px; padding: 20px; min-height: 300px; }
+.chart-box h3 { color: #ccc; font-size: 14px; margin-bottom: 12px; }
+#graph-container { width: 100%; height: 500px; background: #12121a; border: 1px solid #222; border-radius: 12px; margin: 0 32px 24px; padding: 0; overflow: hidden; position: relative; }
+#graph-container h3 { color: #ccc; font-size: 14px; padding: 16px 20px 0; }
+.search-bar { padding: 0 32px 16px; }
+.search-bar input { width: 100%; padding: 12px 16px; background: #1a1a2e; border: 1px solid #333; border-radius: 8px; color: #fff; font-size: 15px; outline: none; }
+.search-bar input:focus { border-color: #4fc3f7; }
+.search-bar input::placeholder { color: #666; }
+.page-list { padding: 0 32px 32px; }
+.page-list h2 { font-size: 16px; color: #ccc; margin-bottom: 12px; }
+.page-item { background: #12121a; border: 1px solid #222; border-radius: 8px; padding: 14px 18px; margin-bottom: 8px; cursor: pointer; transition: border-color 0.2s; display: flex; justify-content: space-between; align-items: center; }
+.page-item:hover { border-color: #4fc3f7; }
+.page-item .title { color: #4fc3f7; font-size: 14px; }
+  .page-item .url { color: #666; font-size: 12px; margin-top: 2px; }
+.page-item .meta { color: #888; font-size: 12px; text-align: right; white-space: nowrap; margin-left: 16px; }
+.page-item .view-btn { color: #4fc3f7; font-size: 12px; text-decoration: none; border: 1px solid #4fc3f7; padding: 4px 10px; border-radius: 6px; white-space: nowrap; margin-left: 12px; }
+.page-item .view-btn:hover { background: #4fc3f7; color: #000; }
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; }
+.modal-overlay.active { display: flex; align-items: center; justify-content: center; }
+.modal { background: #1a1a2e; border: 1px solid #333; border-radius: 12px; width: 90%; max-width: 800px; max-height: 80vh; overflow-y: auto; padding: 24px; }
+.modal h2 { color: #4fc3f7; font-size: 18px; margin-bottom: 8px; }
+.modal .meta-line { color: #888; font-size: 13px; margin-bottom: 16px; }
+.modal .section { margin-bottom: 16px; }
+.modal .section h4 { color: #aaa; font-size: 13px; margin-bottom: 8px; text-transform: uppercase; }
+.modal .link-item { padding: 6px 0; border-bottom: 1px solid #222; font-size: 13px; }
+.modal .link-item a { color: #4fc3f7; text-decoration: none; }
+.modal .close-btn { position: absolute; top: 12px; right: 16px; background: none; border: none; color: #888; font-size: 20px; cursor: pointer; }
+svg text { fill: #aaa; font-size: 11px; }
+.node-label { fill: #fff; font-size: 10px; pointer-events: none; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>🕷️ Web Scraper Dashboard</h1>
+  <p>AI-friendly markdown crawler · PostgreSQL storage</p>
+</div>
+
+<div class="stats-row" id="stats"></div>
+
+<div class="charts-row">
+  <div class="chart-box">
+    <h3>📊 Domain Distribution</h3>
+    <canvas id="domainChart"></canvas>
+  </div>
+  <div class="chart-box">
+    <h3>📊 Words per Domain</h3>
+    <canvas id="wordsChart"></canvas>
+  </div>
+</div>
+
+<div id="graph-container">
+  <h3>🕸️ Link Graph (drag nodes to explore)</h3>
+  <svg id="graph"></svg>
+</div>
+
+<div class="search-bar">
+  <input type="text" id="searchInput" placeholder="🔍 Search pages...">
+</div>
+
+<div class="page-list">
+  <h2>📑 Recent Pages</h2>
+  <div id="pageList"></div>
+</div>
+
+<div class="modal-overlay" id="modal">
+  <div class="modal" id="modalContent"></div>
+</div>
+
+<script>
+const COLORS = ['#4fc3f7','#81c784','#ffb74d','#e57373','#ba68c8','#4dd0e1','#fff176','#f06292','#a1887f','#90a4ae'];
+
+async function loadDashboard() {
+  const res = await fetch('/api/stats');
+  const data = await res.json();
+
+  // Stats cards
+  document.getElementById('stats').innerHTML = `
+    <div class="stat-card"><div class="num">${data.pages}</div><div class="label">Pages Scraped</div></div>
+    <div class="stat-card"><div class="num">${(data.words||0).toLocaleString()}</div><div class="label">Total Words</div></div>
+    <div class="stat-card"><div class="num">${data.domains}</div><div class="label">Domains</div></div>
+    <div class="stat-card"><div class="num">${(data.total_links||0).toLocaleString()}</div><div class="label">Links Tracked</div></div>
+  `;
+
+  // Domain pie chart
+  if (data.domains_list && data.domains_list.length) {
+    new Chart(document.getElementById('domainChart'), {
+      type: 'doughnut',
+      data: {
+        labels: data.domains_list.map(d => d.domain),
+        datasets: [{
+          data: data.domains_list.map(d => parseInt(d.cnt)),
+          backgroundColor: COLORS.slice(0, data.domains_list.length),
+        }]
+      },
+      options: { plugins: { legend: { labels: { color: '#aaa', font: { size: 11 } } } } }
+    });
+
+    new Chart(document.getElementById('wordsChart'), {
+      type: 'bar',
+      data: {
+        labels: data.domains_list.map(d => d.domain),
+        datasets: [{
+          label: 'Words',
+          data: data.domains_list.map(d => parseInt(d.words) || 0),
+          backgroundColor: COLORS.slice(0, data.domains_list.length).map(c => c + '99'),
+          borderColor: COLORS.slice(0, data.domains_list.length),
+          borderWidth: 1,
+        }]
+      },
+      options: {
+        indexAxis: 'y',
+        plugins: { legend: { display: false } },
+        scales: {
+          x: { ticks: { color: '#888' }, grid: { color: '#222' } },
+          y: { ticks: { color: '#888' }, grid: { display: false } },
+        }
+      }
+    });
+  }
+
+  // Page list
+  const list = document.getElementById('pageList');
+  (data.recent_pages || []).forEach(p => {
+    const item = document.createElement('div');
+    item.className = 'page-item';
+    item.innerHTML = `
+      <div>
+        <div class="title">${p.title || '(no title)'}</div>
+        <div class="url">${p.url}</div>
+      </div>
+      <div style="display:flex;align-items:center;">
+        <div class="meta">
+          ${p.word_count || 0} words<br>
+          ${p.out_link_count || 0}↓ ${p.in_link_count || 0}↑
+        </div>
+        <a class="view-btn" href="/page/${p.url_hash}" onclick="event.stopPropagation()">View Content</a>
+      </div>
+    `;
+    list.appendChild(item);
+  });
+
+  // Link graph
+  loadGraph();
+}
+
+async function loadGraph() {
+  const res = await fetch('/api/graph');
+  const data = await res.json();
+  if (!data.nodes.length) return;
+
+  const container = document.getElementById('graph-container');
+  const width = container.clientWidth;
+  const height = container.clientHeight - 40;
+
+  const svg = d3.select('#graph')
+    .attr('width', width)
+    .attr('height', height)
+    .attr('viewBox', [0, 0, width, height]);
+
+  svg.selectAll('*').remove();
+
+  const domainColor = {};
+  const domains = [...new Set(data.nodes.map(n => n.domain))];
+  domains.forEach((d, i) => domainColor[d] = COLORS[i % COLORS.length]);
+
+  const sim = d3.forceSimulation(data.nodes)
+    .force('link', d3.forceLink(data.links).id(d => d.id).distance(80))
+    .force('charge', d3.forceManyBody().strength(-200))
+    .force('center', d3.forceCenter(width / 2, height / 2))
+    .force('collision', d3.forceCollide().radius(d => d.size + 5));
+
+  const link = svg.append('g')
+    .selectAll('line')
+    .data(data.links)
+    .join('line')
+    .attr('stroke', '#333')
+    .attr('stroke-width', 1)
+    .attr('marker-end', 'url(#arrow)');
+
+  svg.append('defs').append('marker')
+    .attr('id', 'arrow')
+    .attr('viewBox', '0 -3 6 6')
+    .attr('refX', 15)
+    .attr('refY', 0)
+    .attr('markerWidth', 6)
+    .attr('markerHeight', 6)
+    .attr('orient', 'auto')
+    .append('path')
+    .attr('d', 'M0,-3L6,0L0,3')
+    .attr('fill', '#555');
+
+  const node = svg.append('g')
+    .selectAll('circle')
+    .data(data.nodes)
+    .join('circle')
+    .attr('r', d => d.size)
+    .attr('fill', d => domainColor[d.domain] || '#666')
+    .attr('stroke', '#000')
+    .attr('stroke-width', 1)
+    .style('cursor', 'pointer')
+    .call(d3.drag()
+      .on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+      .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
+      .on('end', (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; })
+    );
+
+  const label = svg.append('g')
+    .selectAll('text')
+    .data(data.nodes)
+    .join('text')
+    .attr('class', 'node-label')
+    .attr('dx', d => d.size + 4)
+    .attr('dy', 4)
+    .text(d => d.label);
+
+  node.on('click', (e, d) => { window.open(d.url, '_blank'); });
+  node.append('title').text(d => `${d.label}\n${d.url}`);
+
+  sim.on('tick', () => {
+    link.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+        .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+    node.attr('cx', d => d.x).attr('cy', d => d.y);
+    label.attr('x', d => d.x).attr('y', d => d.y);
+  });
+}
+
+async function loadPage(hashId) {
+  const res = await fetch(`/api/page/${hashId}`);
+  const data = await res.json();
+  const p = data.page;
+  let html = `
+    <button class="close-btn" onclick="closeModal()">✕</button>
+    <h2>${p.title || '(no title)'}</h2>
+    <div class="meta-line">${p.url}<br>${p.word_count} words · ${p.out_link_count} outbound · ${p.in_link_count} inbound</div>
+  `;
+  if (data.outlinks.length) {
+    html += `<div class="section"><h4>🔗 Outbound Links (${data.outlinks.length})</h4>`;
+    data.outlinks.forEach(l => {
+      html += `<div class="link-item"><a href="${l.target_url}" target="_blank">${l.anchor_text || l.target_url}</a></div>`;
+    });
+    html += '</div>';
+  }
+  if (data.inlinks.length) {
+    html += `<div class="section"><h4>📎 Inbound Links (${data.inlinks.length})</h4>`;
+    data.inlinks.forEach(l => {
+      html += `<div class="link-item"><a href="${l.source_url || '#'}" target="_blank">${l.source_title || l.source_hash}</a> — ${l.anchor_text || ''}</div>`;
+    });
+    html += '</div>';
+  }
+  // Preview markdown
+  html += `<div class="section"><h4>📝 Content Preview</h4><div style="color:#aaa;font-size:13px;max-height:300px;overflow-y:auto;white-space:pre-wrap;background:#0a0a0f;padding:12px;border-radius:8px;">${(p.markdown || '').slice(0, 3000)}</div></div>`;
+
+  document.getElementById('modalContent').innerHTML = html;
+  document.getElementById('modal').classList.add('active');
+}
+
+function closeModal() { document.getElementById('modal').classList.remove('active'); }
+document.getElementById('modal').addEventListener('click', e => { if (e.target === e.currentTarget) closeModal(); });
+
+// Search
+document.getElementById('searchInput').addEventListener('input', async (e) => {
+  const q = e.target.value.trim();
+  const list = document.getElementById('pageList');
+  if (!q) { loadDashboard(); return; }
+  const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+  const results = await res.json();
+  list.innerHTML = '';
+  results.forEach(p => {
+    const item = document.createElement('div');
+    item.className = 'page-item';
+    item.innerHTML = `
+      <div><div class="title">${p.title || '(no title)'}</div><div class="url">${p.url}</div></div>
+      <div style="display:flex;align-items:center;">
+        <div class="meta">${p.word_count || 0} words</div>
+        <a class="view-btn" href="/page/${p.url_hash}" onclick="event.stopPropagation()">View Content</a>
+      </div>
+    `;
+    list.appendChild(item);
+  });
+});
+
+loadDashboard();
+</script>
+</body>
+</html>
