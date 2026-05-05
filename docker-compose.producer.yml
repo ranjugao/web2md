@@ -1,7 +1,6 @@
-# ── All-in-one: API + DB + Dashboard (single machine) ──
-# For production with separate machines, use:
-#   docker compose -f docker-compose.producer.yml up -d   (on machine A)
-#   docker compose -f docker-compose.consumer.yml up -d   (on machine B)
+# ── Producer: API + Scraper + PostgreSQL ──
+# Run this on the machine that does the scraping.
+# The DB is exposed on port 5433 for remote consumers.
 
 services:
   db:
@@ -13,7 +12,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "127.0.0.1:5433:5432"
+      - "127.0.0.1:5433:5432"  # Bind to localhost only (remote access via SSH tunnel or firewall)
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U scraper -d web_scraper"]
       interval: 5s
@@ -31,29 +30,14 @@ services:
       SCRAPER_DB_USER: scraper
       SCRAPER_DB_PASS: scraper2026
       API_PORT: "5556"
+      # API Keys (comma-separated, or leave empty to auto-generate)
       API_KEYS: "${API_KEYS:-}"
+      # Webhook: Telegram notifications for new content
       WEBHOOK_ENABLED: "${WEBHOOK_ENABLED:-false}"
       WEBHOOK_URL: "${WEBHOOK_URL:-}"
       WEBHOOK_CHAT_ID: "${WEBHOOK_CHAT_ID:-}"
       WEBHOOK_MIN_WORDS: "${WEBHOOK_MIN_WORDS:-50}"
       WEBHOOK_DOMAINS: "${WEBHOOK_DOMAINS:-}"
-    depends_on:
-      db:
-        condition: service_healthy
-    restart: unless-stopped
-
-  dashboard:
-    build: .
-    command: python3 app.py
-    ports:
-      - "5555:5555"
-    environment:
-      SCRAPER_DB_HOST: db
-      SCRAPER_DB_PORT: "5432"
-      SCRAPER_DB_NAME: web_scraper
-      SCRAPER_DB_USER: scraper
-      SCRAPER_DB_PASS: scraper2026
-      DASHBOARD_PORT: "5555"
     depends_on:
       db:
         condition: service_healthy

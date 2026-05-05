@@ -57,10 +57,42 @@ API_KEYS=my-secret-key uvicorn api:app --host 0.0.0.0 --port 5556
 cp .env.example .env
 vim .env
 
-# Start
+# All-in-one (single machine)
 docker compose up -d
 
-# API available at http://localhost:5557
+# Or separate deployment (see below)
+docker compose -f docker-compose.producer.yml up -d
+docker compose -f docker-compose.consumer.yml up -d
+```
+
+### Separated Deployment (Producer + Consumer)
+
+Run the scraper/API on one machine, the dashboard on another:
+
+```bash
+# ── Machine A (Producer): Scraper + API + DB ──
+cd /path/to/web2md
+docker compose -f docker-compose.producer.yml up -d
+# API: http://<machine-a-ip>:5556
+# DB:  localhost:5433 (internal only)
+
+# ── Machine B (Consumer): Dashboard ──
+cd /path/to/web2md
+# Point to Machine A's DB
+SCRAPER_DB_HOST=<machine-a-ip> \
+SCRAPER_DB_PORT=5433 \
+docker compose -f docker-compose.consumer.yml up -d
+# Dashboard: http://<machine-b-ip>:5555
+```
+
+**DB access security:** The producer binds PostgreSQL to `127.0.0.1:5433` by default. To allow remote access:
+
+```bash
+# Option 1: SSH tunnel (recommended)
+ssh -L 5433:localhost:5433 user@<machine-a-ip>
+
+# Option 2: Open port in firewall (less secure)
+# Edit docker-compose.producer.yml → change "127.0.0.1:5433:5432" to "0.0.0.0:5433:5432"
 ```
 
 ## API Endpoints
@@ -170,17 +202,20 @@ Environment variables:
 
 ```bash
 # Database
-SCRAPER_DB_HOST=localhost
-SCRAPER_DB_PORT=5432
+SCRAPER_DB_HOST=localhost      # Remote DB IP for consumer mode
+SCRAPER_DB_PORT=5432           # 5433 when connecting via Docker port mapping
 SCRAPER_DB_NAME=web_scraper
 SCRAPER_DB_USER=scraper
 SCRAPER_DB_PASS=scraper2026
 
-# API
+# API (Producer)
 API_PORT=5556
 API_KEYS=your-key-1,your-key-2    # Comma-separated, empty = auto-generate
 
-# Webhook
+# Dashboard (Consumer)
+DASHBOARD_PORT=5555
+
+# Webhook (Producer)
 WEBHOOK_ENABLED=false
 WEBHOOK_URL=                        # Telegram bot token
 WEBHOOK_CHAT_ID=                    # Telegram chat ID
@@ -198,8 +233,11 @@ web2md/
 ├── app.py             # Web dashboard (Flask)
 ├── templates/         # Dashboard templates
 ├── requirements.txt   # Python dependencies
-├── Dockerfile         # Docker image
-├── docker-compose.yml # Full stack deployment
+├── Dockerfile         # Docker image (both producer & consumer)
+├── docker-compose.yml           # All-in-one (single machine)
+├── docker-compose.producer.yml  # Producer only (API + DB)
+├── docker-compose.consumer.yml  # Consumer only (Dashboard)
+├── .env.example       # Environment variable template
 └── README.md
 ```
 

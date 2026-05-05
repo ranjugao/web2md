@@ -1,0 +1,18 @@
+# ── Consumer: Web Dashboard ──
+# Connects to a remote PostgreSQL (the Producer's DB).
+# Set SCRAPER_DB_HOST to the Producer's IP or SSH tunnel.
+
+services:
+  dashboard:
+    build: .
+    command: python3 app.py
+    ports:
+      - "5555:5555"
+    environment:
+      SCRAPER_DB_HOST: "${SCRAPER_DB_HOST:-localhost}"
+      SCRAPER_DB_PORT: "${SCRAPER_DB_PORT:-5433}"
+      SCRAPER_DB_NAME: "${SCRAPER_DB_NAME:-web_scraper}"
+      SCRAPER_DB_USER: "${SCRAPER_DB_USER:-scraper}"
+      SCRAPER_DB_PASS: "${SCRAPER_DB_PASS:-scraper2026}"
+      DASHBOARD_PORT: "5555"
+    restart: unless-stopped
