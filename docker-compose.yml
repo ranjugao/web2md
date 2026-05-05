@@ -26,6 +26,14 @@ services:
       SCRAPER_DB_USER: scraper
       SCRAPER_DB_PASS: scraper2026
       API_PORT: "5556"
+      # API Keys (comma-separated, or leave empty to auto-generate)
+      API_KEYS: "${API_KEYS:-}"
+      # Webhook: Telegram notifications for new content
+      WEBHOOK_ENABLED: "${WEBHOOK_ENABLED:-false}"
+      WEBHOOK_URL: "${WEBHOOK_URL:-}"
+      WEBHOOK_CHAT_ID: "${WEBHOOK_CHAT_ID:-}"
+      WEBHOOK_MIN_WORDS: "${WEBHOOK_MIN_WORDS:-50}"
+      WEBHOOK_DOMAINS: "${WEBHOOK_DOMAINS:-}"
     depends_on:
       db:
         condition: service_healthy

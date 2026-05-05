@@ -10,7 +10,10 @@ Adaptive web scraper powered by [Scrapling](https://github.com/D4Vinci/Scrapling
 - **Link graph tracking** — Stores source→target relationships for site structure analysis
 - **PostgreSQL storage** — Full-text search, efficient queries
 - **Async REST API** — FastAPI with background task execution
+- **API Key authentication** — Secure access with `X-API-Key` header
+- **Webhook notifications** — Auto-push new content to Telegram
 - **Web dashboard** — Interactive link graph, search, page viewer
+- **Docker Compose** — One-command deployment
 
 ## Quick Start
 
@@ -40,28 +43,52 @@ python scraper.py --stats
 ### API Usage
 
 ```bash
-# Start the API server
+# Start the API server (auto-generates API key if not set)
 python api.py
 
 # Or with uvicorn
-uvicorn api:app --host 0.0.0.0 --port 5556
+API_KEYS=my-secret-key uvicorn api:app --host 0.0.0.0 --port 5556
+```
+
+### Docker
+
+```bash
+# Copy env file and configure
+cp .env.example .env
+vim .env
+
+# Start
+docker compose up -d
+
+# API available at http://localhost:5557
 ```
 
 ## API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/scrape` | Async scrape a URL → returns `task_id` |
+| `GET` | `/api/health` | Health check (no auth) |
+| **API Keys** |||
+| `GET` | `/api/keys` | List keys |
+| `POST` | `/api/keys` | Generate new key |
+| `DELETE` | `/api/keys/{key}` | Delete key |
+| **Webhook** |||
+| `GET` | `/api/webhook` | Get webhook config |
+| `POST` | `/api/webhook/test` | Send test notification |
+| **Scrape** |||
+| `POST` | `/api/scrape` | Async scrape URL → `task_id` |
 | `POST` | `/api/scrape/batch` | Async batch scrape |
-| `POST` | `/api/crawl` | Crawl entire site (follow internal links) |
-| `GET` | `/api/tasks` | List all background tasks |
-| `GET` | `/api/tasks/{id}` | Get task status/result |
-| `GET` | `/api/pages` | List pages (with filters) |
-| `GET` | `/api/pages/{key}` | Get page detail |
-| `GET` | `/api/pages/{key}/markdown` | Get raw markdown |
-| `GET` | `/api/pages/{key}/links` | Get outbound links |
-| `GET` | `/api/pages/{key}/backlinks` | Get inbound links |
-| `DELETE` | `/api/pages/{key}` | Delete a page |
+| `POST` | `/api/crawl` | Crawl entire site (follow links) |
+| `GET` | `/api/tasks` | List background tasks |
+| `GET` | `/api/tasks/{id}` | Task status/result |
+| **Pages** |||
+| `GET` | `/api/pages` | List pages (filters: `domain`, `page_type`) |
+| `GET` | `/api/pages/{key}` | Page detail |
+| `GET` | `/api/pages/{key}/markdown` | Raw markdown |
+| `GET` | `/api/pages/{key}/links` | Outbound links |
+| `GET` | `/api/pages/{key}/backlinks` | Inbound links |
+| `DELETE` | `/api/pages/{key}` | Delete page |
+| **Search & Stats** |||
 | `GET` | `/api/search?q=` | Full-text search |
 | `GET` | `/api/stats` | Database statistics |
 | `GET` | `/api/graph` | Link graph |
@@ -69,18 +96,71 @@ uvicorn api:app --host 0.0.0.0 --port 5556
 | `GET` | `/api/domains/{domain}` | Pages by domain |
 | `GET` | `/docs` | Swagger UI |
 
+## Authentication
+
+All API endpoints (except `/api/health` and `/docs`) require an `X-API-Key` header.
+
+```bash
+# Without key → 401
+curl http://localhost:5556/api/stats
+# {"detail": "Invalid or missing API key. Pass X-API-Key header."}
+
+# With key → 200
+curl -H "X-API-Key: my-secret-key" http://localhost:5556/api/stats
+
+# Auto-generate a key on startup (when API_KEYS env is empty)
+# The key is printed in the server logs on first boot.
+```
+
+## Webhook (Telegram)
+
+Push newly scraped pages to a Telegram chat automatically.
+
+### Setup
+
+1. Create a Telegram bot via [@BotFather](https://t.me/BotFather), copy the token
+2. Get your chat ID (send a message to your bot, then visit `https://api.telegram.org/bot<TOKEN>/getUpdates`)
+3. Configure via environment variables or `.env`:
+
+```bash
+WEBHOOK_ENABLED=true
+WEBHOOK_URL=123456789:ABCdefGHIjklMNOpqrsTUVwxyz   # Bot token
+WEBHOOK_CHAT_ID=-1001234567890                         # Chat/group ID
+WEBHOOK_MIN_WORDS=50        # Skip pages under 50 words
+WEBHOOK_DOMAINS=bbc.com,cnn.com  # Only notify for these domains (empty = all)
+```
+
+### How it works
+
+- After a scrape completes, the API checks if the page meets the webhook criteria
+- If enabled, it sends a formatted notification with title, domain, word count, and link
+- Test with: `curl -X POST -H "X-API-Key: your-key" http://localhost:5556/api/webhook/test`
+
+### Example notification
+
+```
+🕷️ New Page Scraped
+
+📄 How AI Is Changing Healthcare
+🌐 bbc.com
+📝 1,234 words · 🔗 15 links
+
+View: https://bbc.com/article/xyz
+```
+
 ## Example: Async Scrape
 
 ```bash
 # Submit scrape task (returns immediately)
 curl -X POST http://localhost:5556/api/scrape \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: my-secret-key" \
   -d '{"url": "https://news.ycombinator.com"}'
 
 # Response: {"task_id": "a1b2c3d4", "status": "running"}
 
 # Poll for result
-curl http://localhost:5556/api/tasks/a1b2c3d4
+curl -H "X-API-Key: my-secret-key" http://localhost:5556/api/tasks/a1b2c3d4
 # Response: {"status": "done", "result": {"scraped": true}}
 ```
 
@@ -89,12 +169,23 @@ curl http://localhost:5556/api/tasks/a1b2c3d4
 Environment variables:
 
 ```bash
-SCRAPER_DB_HOST=localhost    # PostgreSQL host
-SCRAPER_DB_PORT=5432         # PostgreSQL port
-SCRAPER_DB_NAME=web_scraper  # Database name
-SCRAPER_DB_USER=scraper      # Database user
-SCRAPER_DB_PASS=scraper2026  # Database password
-API_PORT=5556                # API server port
+# Database
+SCRAPER_DB_HOST=localhost
+SCRAPER_DB_PORT=5432
+SCRAPER_DB_NAME=web_scraper
+SCRAPER_DB_USER=scraper
+SCRAPER_DB_PASS=scraper2026
+
+# API
+API_PORT=5556
+API_KEYS=your-key-1,your-key-2    # Comma-separated, empty = auto-generate
+
+# Webhook
+WEBHOOK_ENABLED=false
+WEBHOOK_URL=                        # Telegram bot token
+WEBHOOK_CHAT_ID=                    # Telegram chat ID
+WEBHOOK_MIN_WORDS=50
+WEBHOOK_DOMAINS=                    # Comma-separated filter
 ```
 
 ## Project Structure
@@ -102,9 +193,13 @@ API_PORT=5556                # API server port
 ```
 web2md/
 ├── scraper.py         # Core scraper (Scrapling-powered)
-├── api.py             # RESTful API (FastAPI)
-├── templates/         # Web dashboard templates
+├── scraper_v2.py      # Alias for scraper.py
+├── api.py             # RESTful API (FastAPI + auth + webhooks)
+├── app.py             # Web dashboard (Flask)
+├── templates/         # Dashboard templates
 ├── requirements.txt   # Python dependencies
+├── Dockerfile         # Docker image
+├── docker-compose.yml # Full stack deployment
 └── README.md
 ```
 
