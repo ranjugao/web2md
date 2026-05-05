@@ -25,7 +25,7 @@ from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
 # Import scraper functions
-from scraper_v2 import (
+from scraper import (
     get_conn, init_db,
     scrape, batch_scrape, search,
     get_stats, export_markdown, get_outlinks, get_inlinks,
