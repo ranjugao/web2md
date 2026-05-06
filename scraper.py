@@ -16,9 +16,18 @@ from urllib.parse import urlparse, urljoin, parse_qs, urlencode
 import psycopg2
 import psycopg2.extras
 import requests
-from readability import Document
 from bs4 import BeautifulSoup
 from markdownify import markdownify as md
+
+try:
+    import trafilatura
+except ImportError:  # pragma: no cover - keeps older installs usable until deps are updated
+    trafilatura = None
+
+try:
+    from readability import Document
+except ImportError:  # pragma: no cover
+    Document = None
 
 
 # --- DB Config ---
@@ -127,11 +136,20 @@ def init_db():
                 word_count     INTEGER,
                 out_link_count INTEGER DEFAULT 0,
                 in_link_count  INTEGER DEFAULT 0,
+                page_type      VARCHAR(16) DEFAULT 'detail',
+                content_hash   VARCHAR(16) DEFAULT '',
                 scraped_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 status_code    INTEGER,
                 content_type   TEXT
             )
         """)
+        for alter_sql in [
+            "ALTER TABLE pages ADD COLUMN IF NOT EXISTS author TEXT DEFAULT ''",
+            "ALTER TABLE pages ADD COLUMN IF NOT EXISTS pub_date TEXT DEFAULT ''",
+            "ALTER TABLE pages ADD COLUMN IF NOT EXISTS page_type VARCHAR(16) DEFAULT 'detail'",
+            "ALTER TABLE pages ADD COLUMN IF NOT EXISTS content_hash VARCHAR(16) DEFAULT ''",
+        ]:
+            cur.execute(alter_sql)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS links (
                 source_hash  VARCHAR(16) NOT NULL,
@@ -146,6 +164,8 @@ def init_db():
             "CREATE INDEX IF NOT EXISTS idx_links_source ON links(source_hash)",
             "CREATE INDEX IF NOT EXISTS idx_links_target ON links(target_hash)",
             "CREATE INDEX IF NOT EXISTS idx_domain ON pages(domain)",
+            "CREATE INDEX IF NOT EXISTS idx_page_type ON pages(page_type)",
+            "CREATE INDEX IF NOT EXISTS idx_content_hash ON pages(content_hash)",
             "CREATE INDEX IF NOT EXISTS idx_scraped ON pages(scraped_at)",
             "CREATE INDEX IF NOT EXISTS idx_title_gin ON pages USING gin(to_tsvector('english', coalesce(title, '')))",
             "CREATE INDEX IF NOT EXISTS idx_md_gin ON pages USING gin(to_tsvector('english', coalesce(markdown, '')))",
@@ -155,6 +175,29 @@ def init_db():
             except Exception:
                 conn.rollback()
                 continue
+        cur.execute("""
+            CREATE OR REPLACE VIEW page_rank AS
+            SELECT
+                p.url,
+                p.title,
+                p.word_count,
+                COALESCE(out_counts.out_link_count, 0) AS out_link_count,
+                COALESCE(in_counts.in_link_count, 0) AS in_link_count,
+                p.scraped_at
+            FROM pages p
+            LEFT JOIN (
+                SELECT source_hash, COUNT(*) AS out_link_count
+                FROM links
+                GROUP BY source_hash
+            ) out_counts ON out_counts.source_hash = p.url_hash
+            LEFT JOIN (
+                SELECT target_hash, COUNT(*) AS in_link_count
+                FROM links
+                GROUP BY target_hash
+            ) in_counts ON in_counts.target_hash = p.url_hash
+            ORDER BY COALESCE(in_counts.in_link_count, 0) + COALESCE(out_counts.out_link_count, 0) DESC,
+                     p.scraped_at DESC
+        """)
     conn.commit()
     conn.close()
 
@@ -260,9 +303,144 @@ def fetch_page(url: str) -> dict:
         raise Exception(f"Both requests and Playwright failed: {e2}")
 
 
+def _first_meta(soup: BeautifulSoup, *names: str) -> str:
+    """Return the first matching meta content value."""
+    for name in names:
+        attrs = {"property": name} if ":" in name else {"name": name}
+        tag = soup.find("meta", attrs=attrs)
+        if tag and tag.get("content"):
+            return tag["content"].strip()
+    return ""
+
+
+def _extract_links(html: str, base_url: str, limit: int = 300) -> list:
+    """Collect absolute outbound links for the link graph."""
+    soup = BeautifulSoup(html, "lxml")
+    links = []
+    seen = set()
+    for a in soup.find_all("a"):
+        href = a.get("href", "")
+        if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
+            continue
+        abs_url = urljoin(base_url, href)
+        if abs_url in seen:
+            continue
+        seen.add(abs_url)
+        links.append({"url": abs_url, "anchor": a.get_text(" ", strip=True)[:200]})
+        if len(links) >= limit:
+            break
+    return links
+
+
+def _metadata_dict(metadata) -> dict:
+    if not metadata:
+        return {}
+    if isinstance(metadata, dict):
+        return metadata
+    if hasattr(metadata, "as_dict"):
+        return metadata.as_dict()
+    return {
+        key: getattr(metadata, key, "")
+        for key in ("title", "author", "date", "description", "sitename")
+        if getattr(metadata, key, "")
+    }
+
+
+def _format_markdown(title: str, author: str, pub_date: str, source_url: str,
+                     description: str, markdown_text: str) -> str:
+    markdown_text = markdown_text.strip()
+    if title:
+        first_line, _, rest = markdown_text.partition("\n")
+        if first_line.strip("# ").strip() == title.strip():
+            markdown_text = rest.strip()
+
+    header_parts = []
+    if title and title != "(untitled)":
+        header_parts.append(f"# {title}")
+    if author:
+        header_parts.append(f"**Author:** {author}")
+    if pub_date:
+        header_parts.append(f"**Published:** {pub_date}")
+    header_parts.append(f"**Source:** {source_url}")
+    if description:
+        header_parts.append(f"\n> {description}")
+    header_parts.append("")
+    return "\n".join(header_parts) + markdown_text
+
+
+def _markdown_word_count(markdown_text: str) -> int:
+    text = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", markdown_text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"[#*_>`|~=\-]+", " ", text)
+    return len(text.split())
+
+
+def _extract_with_trafilatura(html: str, base_url: str) -> dict | None:
+    """Use Trafilatura as the primary extraction engine when available."""
+    if trafilatura is None:
+        return None
+
+    soup = BeautifulSoup(html, "lxml")
+    markdown_text = trafilatura.extract(
+        html,
+        url=base_url,
+        output_format="markdown",
+        include_comments=False,
+        include_images=True,
+        include_links=True,
+        include_tables=True,
+        favor_precision=True,
+        with_metadata=False,
+    )
+    if not markdown_text or len(markdown_text.strip()) < 80:
+        return None
+
+    metadata = _metadata_dict(
+        trafilatura.bare_extraction(
+            html,
+            url=base_url,
+            include_comments=False,
+            include_tables=True,
+            favor_precision=True,
+        )
+    )
+
+    title = (
+        metadata.get("title")
+        or _first_meta(soup, "og:title", "twitter:title")
+        or (soup.title.get_text(strip=True) if soup.title else "")
+        or "(untitled)"
+    )[:300]
+    author = (metadata.get("author") or _first_meta(soup, "author"))[:100]
+    pub_date = (
+        metadata.get("date")
+        or metadata.get("pubdate")
+        or _first_meta(soup, "article:published_time", "date", "publish_date")
+    )[:30]
+    description = (
+        metadata.get("description")
+        or _first_meta(soup, "description", "og:description", "twitter:description")
+    )[:500]
+
+    return {
+        "title": title,
+        "description": description,
+        "markdown": _format_markdown(title, author, pub_date, base_url, description, markdown_text),
+        "word_count": _markdown_word_count(markdown_text),
+        "links": _extract_links(html, base_url),
+        "author": author,
+        "pub_date": pub_date,
+    }
+
+
 def extract_content(html: str, base_url: str) -> dict:
     """Extract readable content and convert to clean AI-friendly markdown."""
-    parsed_base = urlparse(base_url)
+    extracted = _extract_with_trafilatura(html, base_url)
+    if extracted:
+        return extracted
+
+    if Document is None:
+        raise RuntimeError("Install trafilatura or readability-lxml to extract page content.")
 
     # --- Title extraction (try multiple strategies) ---
     soup_full = BeautifulSoup(html, "lxml")

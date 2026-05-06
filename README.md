@@ -1,11 +1,12 @@
-# Web2MD 🕷️
+# Web2MD
 
-Adaptive web scraper powered by [Scrapling](https://github.com/D4Vinci/Scrapling). Extracts readable content as markdown, stores in PostgreSQL, with a RESTful API and web dashboard.
+Adaptive web scraper powered by [Trafilatura](https://github.com/adbar/trafilatura). Extracts readable web content as Markdown, stores it in PostgreSQL, and exposes both a REST API and a small web dashboard.
 
 ## Features
 
-- **Scrapling-powered fetching** — Fast HTTP with TLS fingerprint impersonation, plus StealthyFetcher for Cloudflare bypass
-- **Smart content extraction** — 5-layer title detection, author/date extraction, markdown conversion
+- **Trafilatura-powered extraction** — Apache-2.0 extraction engine for robust readable text, metadata, tables, links, images, and Markdown output
+- **Adaptive fetching** — Fast `requests` fetch path with Playwright fallback for JavaScript or challenge-heavy pages
+- **Smart content fallback** — Legacy readability/BeautifulSoup extraction stays available if Trafilatura cannot extract enough content
 - **Smart deduplication** — Listing pages re-crawl on content change; detail pages skip permanently
 - **Link graph tracking** — Stores source→target relationships for site structure analysis
 - **PostgreSQL storage** — Full-text search, efficient queries
@@ -21,7 +22,7 @@ Adaptive web scraper powered by [Scrapling](https://github.com/D4Vinci/Scrapling
 
 ```bash
 pip install -r requirements.txt
-python -m patchright install chromium
+python -m playwright install chromium
 ```
 
 ### CLI Usage
@@ -34,11 +35,21 @@ python scraper.py https://news.ycombinator.com
 python scraper.py -f urls.txt
 
 # Search
-python scraper.py --search "bitcoin"
+python scraper.py -s "bitcoin"
 
 # Stats
-python scraper.py --stats
+python scraper.py -i
 ```
+
+## Open Source Base
+
+The project now uses Trafilatura as its embedded extraction engine. It is a good fit for this codebase because it is Python-native, Apache-2.0 licensed, maintained as a library and CLI, and supports Markdown output without forcing Web2MD into a separate service architecture.
+
+Other strong projects are worth tracking:
+
+- [Crawl4AI](https://github.com/unclecode/crawl4ai) — excellent for browser-heavy, LLM-oriented crawling. It is larger and better suited if Web2MD evolves into an async crawler worker system.
+- [Firecrawl](https://github.com/mendableai/firecrawl) — very mature API product and crawler stack, but AGPL-3.0 and more service-oriented.
+- [MarkItDown](https://github.com/microsoft/markitdown) — best for converting local documents and office files to Markdown; it is complementary rather than a web crawler replacement.
 
 ### API Usage
 
