@@ -238,7 +238,7 @@ WEBHOOK_DOMAINS=                    # Comma-separated filter
 
 ```
 web2md/
-├── scraper.py         # Core scraper (Scrapling-powered)
+├── scraper.py         # Core scraper (Trafilatura-powered)
 ├── scraper_v2.py      # Alias for scraper.py
 ├── api.py             # RESTful API (FastAPI + auth + webhooks)
 ├── app.py             # Web dashboard (Flask)

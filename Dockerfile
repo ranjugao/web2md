@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# System deps for Scrapling/Playwright
+# System deps for Playwright
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget curl gnupg \
     libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
@@ -16,8 +16,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Chromium for Scrapling
-RUN python -m patchright install chromium
+# Install Chromium for Playwright fallback fetching
+RUN python -m playwright install chromium
 
 COPY . .
 
