@@ -16,6 +16,7 @@ Or:  uvicorn api:app --host 0.0.0.0 --port 5556 --reload
 import hashlib
 import asyncio
 import os
+import secrets
 import sys
 import uuid
 import json
@@ -43,17 +44,9 @@ from scraper import (
 
 # ── Config ──────────────────────────────────────────
 
-# API Keys — comma-separated, or auto-generate one
+# API Keys — comma-separated bootstrap keys. Stored in PostgreSQL on startup.
 API_KEYS_RAW = os.getenv("API_KEYS", "")
-if not API_KEYS_RAW:
-    # Auto-generate a key on first run
-    AUTO_KEY = hashlib.sha256(f"web2md-{os.getpid()}-{time.time()}".encode()).hexdigest()[:32]
-    API_KEYS = {AUTO_KEY}
-    print(f"🔑 No API_KEYS set. Auto-generated: {AUTO_KEY}")
-    print(f"   Set env var API_KEYS to use your own key(s)")
-else:
-    API_KEYS = {k.strip() for k in API_KEYS_RAW.split(",") if k.strip()}
-    print(f"🔑 Loaded {len(API_KEYS)} API key(s)")
+BOOTSTRAP_API_KEYS = {k.strip() for k in API_KEYS_RAW.split(",") if k.strip()}
 
 # Webhook config
 WEBHOOK_ENABLED = os.getenv("WEBHOOK_ENABLED", "false").lower() == "true"
@@ -83,6 +76,91 @@ executor = ThreadPoolExecutor(max_workers=4)
 
 # ── API Key Auth ─────────────────────────────────────
 
+def _hash_api_key(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+def _mask_api_key(prefix: str) -> str:
+    return f"{prefix}..."
+
+
+def _new_api_key() -> str:
+    return "w2md_" + secrets.token_urlsafe(32)
+
+
+def init_api_keys_db():
+    """Create and seed durable API key storage."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS api_keys (
+                    id           VARCHAR(36) PRIMARY KEY,
+                    name         TEXT NOT NULL DEFAULT 'API key',
+                    key_prefix   VARCHAR(16) NOT NULL,
+                    key_hash     VARCHAR(64) NOT NULL UNIQUE,
+                    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    expires_at   TIMESTAMPTZ,
+                    last_used_at TIMESTAMPTZ,
+                    revoked_at   TIMESTAMPTZ,
+                    usage_count  INTEGER NOT NULL DEFAULT 0
+                )
+            """)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_active ON api_keys(revoked_at, expires_at)")
+
+            for key in BOOTSTRAP_API_KEYS:
+                cur.execute("""
+                    INSERT INTO api_keys (id, name, key_prefix, key_hash)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (key_hash) DO NOTHING
+                """, (str(uuid.uuid4()), "Bootstrap key", key[:12], _hash_api_key(key)))
+
+            cur.execute("SELECT COUNT(*) FROM api_keys WHERE revoked_at IS NULL")
+            active_count = cur.fetchone()[0]
+            if active_count == 0:
+                generated = _new_api_key()
+                cur.execute("""
+                    INSERT INTO api_keys (id, name, key_prefix, key_hash)
+                    VALUES (%s, %s, %s, %s)
+                """, (str(uuid.uuid4()), "Auto-generated admin key", generated[:12], _hash_api_key(generated)))
+                print(f"🔑 No active API keys found. Auto-generated admin key: {generated}")
+                print("   Store it now; it will not be shown again.")
+            elif BOOTSTRAP_API_KEYS:
+                print(f"🔑 Loaded {len(BOOTSTRAP_API_KEYS)} bootstrap API key(s)")
+            else:
+                print(f"🔑 Loaded {active_count} API key(s) from database")
+
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _verify_stored_api_key(key: str) -> bool:
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE api_keys
+                SET last_used_at = NOW(), usage_count = usage_count + 1
+                WHERE key_hash = %s
+                  AND revoked_at IS NULL
+                  AND (expires_at IS NULL OR expires_at > NOW())
+                RETURNING id
+            """, (_hash_api_key(key),))
+            row = cur.fetchone()
+        conn.commit()
+        return bool(row)
+    except Exception:
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
+
+
 async def verify_api_key(request: Request):
     """Dependency: verify X-API-Key header. Skip for docs and health."""
     path = request.url.path
@@ -93,7 +171,7 @@ async def verify_api_key(request: Request):
         return
 
     key = request.headers.get("X-API-Key", "")
-    if not key or key not in API_KEYS:
+    if not key or not _verify_stored_api_key(key):
         raise HTTPException(
             status_code=401,
             detail="Invalid or missing API key. Pass X-API-Key header.",
@@ -232,6 +310,10 @@ class WebhookConfig(BaseModel):
     min_words: int = 50
     domains: str = ""  # comma-separated
 
+class APIKeyCreateRequest(BaseModel):
+    name: str = Field(default="API key", min_length=1, max_length=120)
+    expires_days: Optional[int] = Field(default=None, ge=1, le=3650)
+
 
 # ── Routes: Health (public) ────────────────────────
 
@@ -244,26 +326,91 @@ def health():
 
 @app.get("/api/keys", dependencies=[Depends(verify_api_key)])
 def api_list_keys():
-    """List masked API keys."""
-    masked = [k[:4] + "..." + k[-4:] for k in API_KEYS]
-    return {"count": len(API_KEYS), "keys": masked}
+    """List stored API keys without exposing secrets."""
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT id, name, key_prefix, created_at, expires_at,
+                       last_used_at, revoked_at, usage_count
+                FROM api_keys
+                ORDER BY created_at DESC
+            """)
+            keys = []
+            for row in cur.fetchall():
+                item = dict(row)
+                item["key"] = _mask_api_key(item.pop("key_prefix"))
+                for field in ("created_at", "expires_at", "last_used_at", "revoked_at"):
+                    if item.get(field):
+                        item[field] = item[field].isoformat()
+                keys.append(item)
+            return {"count": len(keys), "keys": keys}
+    finally:
+        conn.close()
 
 
 @app.post("/api/keys", dependencies=[Depends(verify_api_key)])
-def api_create_key():
-    """Generate a new API key."""
-    new_key = hashlib.sha256(f"web2md-{uuid.uuid4()}-{time.time()}".encode()).hexdigest()[:32]
-    API_KEYS.add(new_key)
-    return {"key": new_key, "message": "Store this key — it won't be shown again in full."}
+def api_create_key(payload: APIKeyCreateRequest | None = None):
+    """Generate and store a new API key."""
+    payload = payload or APIKeyCreateRequest()
+    new_key = _new_api_key()
+    conn = get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                INSERT INTO api_keys (id, name, key_prefix, key_hash, expires_at)
+                VALUES (
+                    %s, %s, %s, %s,
+                    CASE WHEN %s::integer IS NULL THEN NULL ELSE NOW() + (%s::integer * INTERVAL '1 day') END
+                )
+                RETURNING id, name, key_prefix, created_at, expires_at
+            """, (
+                str(uuid.uuid4()), payload.name, new_key[:12], _hash_api_key(new_key),
+                payload.expires_days, payload.expires_days,
+            ))
+            row = dict(cur.fetchone())
+        conn.commit()
+        return {
+            "id": row["id"],
+            "name": row["name"],
+            "key": new_key,
+            "masked": _mask_api_key(row["key_prefix"]),
+            "created_at": row["created_at"].isoformat(),
+            "expires_at": row["expires_at"].isoformat() if row.get("expires_at") else None,
+            "message": "Store this key now; it will not be shown again in full.",
+        }
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(500, str(e))
+    finally:
+        conn.close()
 
 
-@app.delete("/api/keys/{key}", dependencies=[Depends(verify_api_key)])
-def api_delete_key(key: str):
-    """Remove an API key."""
-    if key in API_KEYS:
-        API_KEYS.discard(key)
-        return {"deleted": True}
-    raise HTTPException(404, "Key not found")
+@app.delete("/api/keys/{key_id}", dependencies=[Depends(verify_api_key)])
+def api_delete_key(key_id: str):
+    """Revoke an API key by id, key prefix, or full key value."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            key_hash = _hash_api_key(key_id) if key_id.startswith("w2md_") else None
+            cur.execute("""
+                UPDATE api_keys
+                SET revoked_at = NOW()
+                WHERE revoked_at IS NULL
+                  AND (id = %s OR key_prefix = %s OR key_hash = %s)
+            """, (key_id, key_id, key_hash))
+            deleted = cur.rowcount
+        conn.commit()
+        if deleted:
+            return {"deleted": True, "revoked": deleted}
+        raise HTTPException(404, "Key not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(500, str(e))
+    finally:
+        conn.close()
 
 
 # ── Routes: Webhook Config ─────────────────────────
@@ -598,6 +745,7 @@ def api_delete_page(key: str):
 @app.on_event("startup")
 def startup():
     init_db()
+    init_api_keys_db()
 
 
 # ── Main ────────────────────────────────────────────

@@ -112,9 +112,9 @@ ssh -L 5433:localhost:5433 user@<machine-a-ip>
 |--------|----------|-------------|
 | `GET` | `/api/health` | Health check (no auth) |
 | **API Keys** |||
-| `GET` | `/api/keys` | List keys |
-| `POST` | `/api/keys` | Generate new key |
-| `DELETE` | `/api/keys/{key}` | Delete key |
+| `GET` | `/api/keys` | List stored API keys |
+| `POST` | `/api/keys` | Generate stored API key |
+| `DELETE` | `/api/keys/{key_id}` | Revoke key by id, prefix, or full key |
 | **Webhook** |||
 | `GET` | `/api/webhook` | Get webhook config |
 | `POST` | `/api/webhook/test` | Send test notification |
@@ -141,7 +141,7 @@ ssh -L 5433:localhost:5433 user@<machine-a-ip>
 
 ## Authentication
 
-All API endpoints (except `/api/health` and `/docs`) require an `X-API-Key` header.
+All API endpoints (except `/api/health` and `/docs`) require an `X-API-Key` header. Keys are stored in PostgreSQL as SHA-256 hashes and are only returned in full at creation time.
 
 ```bash
 # Without key → 401
@@ -151,8 +151,21 @@ curl http://localhost:5556/api/stats
 # With key → 200
 curl -H "X-API-Key: my-secret-key" http://localhost:5556/api/stats
 
-# Auto-generate a key on startup (when API_KEYS env is empty)
-# The key is printed in the server logs on first boot.
+# Create a named key, optionally expiring in N days
+curl -X POST http://localhost:5556/api/keys \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: admin-key" \
+  -d '{"name":"crawler worker","expires_days":365}'
+
+# List masked keys with usage metadata
+curl -H "X-API-Key: admin-key" http://localhost:5556/api/keys
+
+# Revoke by id, prefix, or full key value
+curl -X DELETE -H "X-API-Key: admin-key" \
+  http://localhost:5556/api/keys/<key_id>
+
+# On first startup, API_KEYS seeds bootstrap keys into PostgreSQL.
+# If no active key exists, one admin key is printed in logs once.
 ```
 
 ## Webhook (Telegram)
